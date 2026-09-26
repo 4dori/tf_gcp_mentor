@@ -1,0 +1,67 @@
+steps:
+  # ── Step 1: Terraform apply ─────────────────────────────────────────────────
+  - id: tf-init
+    name: hashicorp/terraform:1.5
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        cd terraform
+        terraform init \
+          -backend-config="bucket=${PROJECT_ID}-tf-state" \
+          -input=false
+
+  - id: tf-apply
+    name: hashicorp/terraform:1.5
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        cd terraform
+        terraform apply \
+          -var="project_id=${PROJECT_ID}" \
+          -var="region=${_REGION}" \
+          -var="billing_account_id=${_BILLING_ACCOUNT_ID}" \
+          -var="budget_amount_usd=${_BUDGET_USD}" \
+          -auto-approve \
+          -input=false
+    env:
+      - PROJECT_ID=$PROJECT_ID
+
+  # ── Step 2: Copy PySpark jobs to deploy bucket ──────────────────────────────
+  - id: copy-pyspark-jobs
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    args:
+      - storage
+      - cp
+      - pyspark-jobs/*.py
+      - gs://${PROJECT_ID}-deploy/jobs/
+
+  # ── Step 3: Copy Cloud Workflows YAML to deploy bucket ─────────────────────
+  - id: copy-workflow-yaml
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    args:
+      - storage
+      - cp
+      - workflows/pipeline.yaml
+      - gs://${PROJECT_ID}-deploy/workflows/
+
+  # ── Step 4: Deploy (or update) the Cloud Workflow ──────────────────────────
+  - id: deploy-workflow
+    name: gcr.io/cloud-builders/gcloud
+    args:
+      - workflows
+      - deploy
+      - mentoring-pipeline
+      - --source=workflows/pipeline.yaml
+      - --service-account=sa-workflows@${PROJECT_ID}.iam.gserviceaccount.com
+      - --location=${_REGION}
+
+substitutions:
+  _REGION: us-central1
+  _BILLING_ACCOUNT_ID: XXXXXX-XXXXXXXXXX  # override at trigger time
+  _BUDGET_USD: "50"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  serviceAccount: projects/${PROJECT_ID}/serviceAccounts/sa-cloudbuild@${PROJECT_ID}.iam.gserviceaccount.com

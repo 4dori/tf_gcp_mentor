@@ -1,0 +1,199 @@
+# Cloud Workflows — GCP Mentoring Program Pipeline
+#
+# Sequences 4 Dataproc Serverless batches:
+#   1. Airbnb CSV → Parquet (Lane A extract)
+#   2. Airbnb Parquet → BigQuery (Lane A transform)
+#   3. AdventureWorks JDBC → Parquet (Lane B extract)
+#   4. AdventureWorks Parquet → BigQuery (Lane B transform)
+#
+# Each step submits a batch, then polls until it reaches a terminal state
+# before starting the next step.
+#
+# Deploy:
+#   gcloud workflows deploy mentoring-pipeline \
+#     --source=workflows/pipeline.yaml \
+#     --service-account=sa-workflows@$PROJECT.iam.gserviceaccount.com \
+#     --location=us-central1
+#
+# Run:
+#   gcloud workflows run mentoring-pipeline \
+#     --data='{"project_id":"YOUR_PROJECT","region":"us-central1"}' \
+#     --location=us-central1
+
+main:
+  params: [args]
+  steps:
+
+    - init:
+        assign:
+          - project_id: ${args.project_id}
+          - region: ${default(map.get(args, "region"), "us-central1")}
+          - deploy_bucket: ${"gs://" + project_id + "-deploy"}
+          - sa_dataproc: ${"sa-dataproc-jobs@" + project_id + ".iam.gserviceaccount.com"}
+          - poll_interval_seconds: 20
+          - terminal_states: ["DONE", "FAILED", "CANCELLED"]
+
+    # ── Lane A: Airbnb extract ────────────────────────────────────────────────
+    - submit_airbnb_extract:
+        call: googleapis.dataproc.v1.projects.locations.batches.create
+        args:
+          parent: ${"projects/" + project_id + "/locations/" + region}
+          body:
+            pysparkBatch:
+              mainPythonFileUri: ${deploy_bucket + "/jobs/csv_to_parquet.py"}
+              args:
+                - ${"--project=" + project_id}
+            runtimeConfig:
+              properties:
+                spark.executor.instances: "2"
+            environmentConfig:
+              executionConfig:
+                serviceAccount: ${sa_dataproc}
+        result: airbnb_extract_batch
+
+    - poll_airbnb_extract:
+        call: poll_batch
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          batch_name: ${airbnb_extract_batch.name}
+          poll_interval: ${poll_interval_seconds}
+          terminal_states: ${terminal_states}
+        result: airbnb_extract_result
+
+    - check_airbnb_extract:
+        switch:
+          - condition: ${airbnb_extract_result.state != "DONE"}
+            raise: ${"Airbnb extract batch failed with state " + airbnb_extract_result.state}
+
+    # ── Lane A: Airbnb transform ──────────────────────────────────────────────
+    - submit_airbnb_transform:
+        call: googleapis.dataproc.v1.projects.locations.batches.create
+        args:
+          parent: ${"projects/" + project_id + "/locations/" + region}
+          body:
+            pysparkBatch:
+              mainPythonFileUri: ${deploy_bucket + "/jobs/transform_to_bq.py"}
+              args:
+                - ${"--project=" + project_id}
+              jarFileUris:
+                - "gs://spark-lib/bigquery/spark-bigquery-with-dependencies_2.12-0.36.1.jar"
+            runtimeConfig:
+              properties:
+                spark.executor.instances: "2"
+            environmentConfig:
+              executionConfig:
+                serviceAccount: ${sa_dataproc}
+        result: airbnb_transform_batch
+
+    - poll_airbnb_transform:
+        call: poll_batch
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          batch_name: ${airbnb_transform_batch.name}
+          poll_interval: ${poll_interval_seconds}
+          terminal_states: ${terminal_states}
+        result: airbnb_transform_result
+
+    - check_airbnb_transform:
+        switch:
+          - condition: ${airbnb_transform_result.state != "DONE"}
+            raise: ${"Airbnb transform batch failed with state " + airbnb_transform_result.state}
+
+    # ── Lane B: AdventureWorks extract ────────────────────────────────────────
+    - submit_aw_extract:
+        call: googleapis.dataproc.v1.projects.locations.batches.create
+        args:
+          parent: ${"projects/" + project_id + "/locations/" + region}
+          body:
+            pysparkBatch:
+              mainPythonFileUri: ${deploy_bucket + "/jobs/extract_adventureworks.py"}
+              args:
+                - ${"--project=" + project_id}
+              jarFileUris:
+                - ${deploy_bucket + "/jars/postgresql-42.7.3.jar"}
+            runtimeConfig:
+              properties:
+                spark.executor.instances: "2"
+            environmentConfig:
+              executionConfig:
+                serviceAccount: ${sa_dataproc}
+        result: aw_extract_batch
+
+    - poll_aw_extract:
+        call: poll_batch
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          batch_name: ${aw_extract_batch.name}
+          poll_interval: ${poll_interval_seconds}
+          terminal_states: ${terminal_states}
+        result: aw_extract_result
+
+    - check_aw_extract:
+        switch:
+          - condition: ${aw_extract_result.state != "DONE"}
+            raise: ${"AdventureWorks extract batch failed with state " + aw_extract_result.state}
+
+    # ── Lane B: AdventureWorks transform ──────────────────────────────────────
+    - submit_aw_transform:
+        call: googleapis.dataproc.v1.projects.locations.batches.create
+        args:
+          parent: ${"projects/" + project_id + "/locations/" + region}
+          body:
+            pysparkBatch:
+              mainPythonFileUri: ${deploy_bucket + "/jobs/transform_adventureworks.py"}
+              args:
+                - ${"--project=" + project_id}
+              jarFileUris:
+                - "gs://spark-lib/bigquery/spark-bigquery-with-dependencies_2.12-0.36.1.jar"
+            runtimeConfig:
+              properties:
+                spark.executor.instances: "2"
+            environmentConfig:
+              executionConfig:
+                serviceAccount: ${sa_dataproc}
+        result: aw_transform_batch
+
+    - poll_aw_transform:
+        call: poll_batch
+        args:
+          project_id: ${project_id}
+          region: ${region}
+          batch_name: ${aw_transform_batch.name}
+          poll_interval: ${poll_interval_seconds}
+          terminal_states: ${terminal_states}
+        result: aw_transform_result
+
+    - check_aw_transform:
+        switch:
+          - condition: ${aw_transform_result.state != "DONE"}
+            raise: ${"AdventureWorks transform batch failed with state " + aw_transform_result.state}
+
+    - done:
+        return: "Pipeline completed successfully"
+
+
+# ── Sub-workflow: poll a Dataproc batch until terminal ────────────────────────
+poll_batch:
+  params: [project_id, region, batch_name, poll_interval, terminal_states]
+  steps:
+    - loop:
+        steps:
+          - get_status:
+              call: googleapis.dataproc.v1.projects.locations.batches.get
+              args:
+                name: ${batch_name}
+              result: batch_status
+          - check_terminal:
+              switch:
+                - condition: ${batch_status.state in terminal_states}
+                  next: return_result
+          - wait:
+              call: sys.sleep
+              args:
+                seconds: ${poll_interval}
+              next: loop
+    - return_result:
+        return: ${batch_status}
