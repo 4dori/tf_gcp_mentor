@@ -40,7 +40,7 @@ main:
           parent: ${"projects/" + project_id + "/locations/" + region}
           body:
             pysparkBatch:
-              mainPythonFileUri: ${deploy_bucket + "/jobs/csv_to_parquet.py"}
+              mainPythonFileUri: ${deploy_bucket + "/jobs/airbnb/csv_to_parquet.py"}
               args:
                 - ${"--project=" + project_id}
             runtimeConfig:
@@ -73,11 +73,9 @@ main:
           parent: ${"projects/" + project_id + "/locations/" + region}
           body:
             pysparkBatch:
-              mainPythonFileUri: ${deploy_bucket + "/jobs/transform_to_bq.py"}
+              mainPythonFileUri: ${deploy_bucket + "/jobs/airbnb/transform_to_bq.py"}
               args:
                 - ${"--project=" + project_id}
-              jarFileUris:
-                - "gs://spark-lib/bigquery/spark-bigquery-with-dependencies_2.12-0.36.1.jar"
             runtimeConfig:
               properties:
                 spark.executor.instances: "2"
@@ -108,7 +106,7 @@ main:
           parent: ${"projects/" + project_id + "/locations/" + region}
           body:
             pysparkBatch:
-              mainPythonFileUri: ${deploy_bucket + "/jobs/extract_adventureworks.py"}
+              mainPythonFileUri: ${deploy_bucket + "/jobs/adventureworks/extract_adventureworks.py"}
               args:
                 - ${"--project=" + project_id}
               jarFileUris:
@@ -119,6 +117,7 @@ main:
             environmentConfig:
               executionConfig:
                 serviceAccount: ${sa_dataproc}
+                subnetworkUri: ${"projects/" + project_id + "/regions/" + region + "/subnetworks/default"}
         result: aw_extract_batch
 
     - poll_aw_extract:
@@ -143,11 +142,9 @@ main:
           parent: ${"projects/" + project_id + "/locations/" + region}
           body:
             pysparkBatch:
-              mainPythonFileUri: ${deploy_bucket + "/jobs/transform_adventureworks.py"}
+              mainPythonFileUri: ${deploy_bucket + "/jobs/adventureworks/transform_adventureworks.py"}
               args:
                 - ${"--project=" + project_id}
-              jarFileUris:
-                - "gs://spark-lib/bigquery/spark-bigquery-with-dependencies_2.12-0.36.1.jar"
             runtimeConfig:
               properties:
                 spark.executor.instances: "2"

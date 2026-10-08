@@ -78,13 +78,13 @@ gcloud config list
 
 ## Step 4 — Bootstrap: the state bucket
 
-gsutil mb -l us-central1 gs://YOUR_PROJECT_ID-tf-state
+gcloud storage buckets create gs://YOUR_PROJECT_ID-tf-state --location=us-central1
 
-gsutil versioning set on gs://YOUR_PROJECT_ID-tf-state
+gcloud storage buckets update gs://YOUR_PROJECT_ID-tf-state --versioning
 
 **⚠ Bucket names are global**
 
-• If that name is taken, gsutil mb fails with a 409 — add a random suffix and retry.
+• If that name is taken, bucket creation fails with a 409 — add a random suffix and retry.
 
 ## Step 5 — The Terraform foundation module
 
@@ -341,7 +341,7 @@ gcloud secrets versions add cloud-sql-connection-string --data-file=-
 
 ## Upload the CSVs
 
-gsutil cp listings.csv calendar.csv reviews.csv gs://YOUR_PROJECT_ID-landing/raw/airbnb/
+gcloud storage cp listings.csv calendar.csv reviews.csv gs://YOUR_PROJECT_ID-landing/raw/airbnb/
 
 ## Job 1 — csv_to_parquet.py
 
@@ -363,7 +363,7 @@ df.write.mode("overwrite").parquet(CURATED + name)
 
 spark.stop()
 
-gcloud dataproc batches submit pyspark csv_to_parquet.py \\
+gcloud dataproc batches submit pyspark gs://YOUR_PROJECT_ID-deploy/jobs/airbnb/csv_to_parquet.py \\
 
 \--project=YOUR_PROJECT_ID --region=us-central1 \\
 
@@ -415,7 +415,7 @@ assert null_ids == 0, f"{null_ids} rows with a null id — stopping before the B
 
 spark.stop()
 
-gcloud dataproc batches submit pyspark transform_to_bq.py \\
+gcloud dataproc batches submit pyspark gs://YOUR_PROJECT_ID-deploy/jobs/airbnb/transform_to_bq.py \\
 
 \--project=YOUR_PROJECT_ID --region=us-central1 \\
 
@@ -425,9 +425,9 @@ gcloud dataproc batches submit pyspark transform_to_bq.py \\
 
 \--deps-bucket=gs://YOUR_PROJECT_ID-deploy
 
-**ℹ If you get a "format not found: bigquery" error**
+**ℹ BigQuery connector**
 
-Dataproc Serverless doesn't always have the Spark BigQuery connector preloaded. Add --properties spark.jars.packages=com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.36.1 to the submit command.
+Dataproc Serverless includes a BigQuery connector. Do not add another connector with `spark.jars.packages`; a duplicate can cause Spark class-loading errors.
 
 bq query --use_legacy_sql=false \\
 
@@ -439,7 +439,7 @@ bq query --use_legacy_sql=false \\
 
 curl -LO https://jdbc.postgresql.org/download/postgresql-42.7.3.jar
 
-gsutil cp postgresql-42.7.3.jar gs://YOUR_PROJECT_ID-deploy/jars/
+gcloud storage cp postgresql-42.7.3.jar gs://YOUR_PROJECT_ID-deploy/jars/
 
 ## Job 1 — extract_adventureworks.py
 
@@ -489,7 +489,7 @@ f"gs://YOUR_PROJECT_ID-landing/curated/adventureworks/{t.split('.')\[-1\]}")
 
 spark.stop()
 
-gcloud dataproc batches submit pyspark extract_adventureworks.py \\
+gcloud dataproc batches submit pyspark gs://YOUR_PROJECT_ID-deploy/jobs/adventureworks/extract_adventureworks.py \\
 
 \--project=YOUR_PROJECT_ID --region=us-central1 \\
 
@@ -527,7 +527,7 @@ body:
 
 pysparkBatch:
 
-mainPythonFileUri: gs://YOUR_PROJECT_ID-deploy/jobs/csv_to_parquet.py
+mainPythonFileUri: gs://YOUR_PROJECT_ID-deploy/jobs/airbnb/csv_to_parquet.py
 
 result: airbnbExtractResult
 
@@ -565,13 +565,17 @@ args: \['apply', '-auto-approve'\]
 
 dir: 'terraform'
 
-\- name: 'gcr.io/cloud-builders/gsutil'
+\- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
 
-args: \['cp', '-r', 'pyspark-jobs/\*', 'gs://YOUR_PROJECT_ID-deploy/jobs/'\]
+entrypoint: 'sh'
 
-\- name: 'gcr.io/cloud-builders/gsutil'
+args: \['-c', 'gcloud storage cp pyspark-jobs/airbnb/*.py gs://YOUR_PROJECT_ID-deploy/jobs/airbnb/; gcloud storage cp pyspark-jobs/adventureworks/*.py gs://YOUR_PROJECT_ID-deploy/jobs/adventureworks/'\]
 
-args: \['cp', 'workflows/pipeline.yaml', 'gs://YOUR_PROJECT_ID-deploy/workflows/'\]
+\- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+
+entrypoint: 'gcloud'
+
+args: \['storage', 'cp', 'workflows/pipeline.yaml', 'gs://YOUR_PROJECT_ID-deploy/workflows/'\]
 
 \- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
 

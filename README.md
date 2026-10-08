@@ -2,8 +2,8 @@
 
 A GCP data platform template with two ingestion lanes feeding one BigQuery warehouse, orchestrated by Cloud Workflows and deployed via Cloud Build CI/CD.
 
-**Terraform manages:** service accounts, IAM, GCS buckets, BigQuery dataset, Secret Manager container, billing budget.  
-**Not Terraform:** Cloud SQL (created manually via `gcloud`).
+**Terraform manages:** APIs, service accounts and IAM, GCS buckets, BigQuery dataset, Secret Manager container, Cloud SQL instance and database, plus the static egress IP, Cloud Router, and Cloud NAT used by Dataproc to reach Cloud SQL.
+**Manual steps:** database passwords, the Secret Manager connection-string value, and AdventureWorks data import.
 
 ---
 
@@ -63,7 +63,7 @@ terraform init
 terraform apply
 ```
 
-Expected: ~20 resources (9 APIs, 3 service accounts, 2 buckets, 4 bucket IAM bindings, 1 BQ dataset, 1 secret, 1 secret IAM binding, 1 budget).
+Expected: about 30 resources, including enabled APIs, service accounts and IAM, storage buckets, BigQuery dataset, Secret Manager, Cloud SQL, and Dataproc network egress resources. Terraform also reserves a static NAT IP and allows only that `/32` through Cloud SQL's public-IP authorized networks.
 
 ---
 
@@ -76,17 +76,41 @@ gcloud storage cp postgresql-42.7.3.jar gs://${PROJECT_ID}-deploy/jars/
 
 ---
 
-## Part C — Create Cloud SQL (manual, NOT Terraform)
+## Part C — Cloud SQL and AdventureWorks data
+
+Terraform creates the PostgreSQL instance, `adventureworks` database, static
+egress IP, Cloud Router, and Cloud NAT. The existing default subnet is reused;
+Dataproc Serverless jobs that connect to Cloud SQL must select that subnet.
+
+For an existing sandbox created before Cloud SQL was managed by Terraform,
+import the instance and database once before applying the updated configuration:
 
 ```bash
-gcloud sql instances create adventureworks-db \
-  --database-version=POSTGRES_15 \
-  --tier=db-custom-2-8192 \
-  --region=us-central1 \
-  --availability-type=zonal
+cd terraform
+terraform import google_sql_database_instance.adventureworks \
+  projects/${PROJECT_ID}/instances/adventureworks-db
+terraform import google_sql_database.adventureworks \
+  projects/${PROJECT_ID}/instances/adventureworks-db/databases/adventureworks
+terraform apply
+cd ..
+```
 
-gcloud sql databases create adventureworks --instance=adventureworks-db
+Terraform outputs the Cloud SQL authorized egress address and Dataproc subnet:
 
+```bash
+terraform -chdir=terraform output dataproc_nat_ip
+terraform -chdir=terraform output dataproc_subnet
+```
+
+Terraform enables Cloud SQL deletion protection. The instance and database
+have `prevent_destroy`; remove those protections deliberately before teardown.
+Cloud NAT has ongoing hourly and per-GiB charges, so destroy this sandbox's
+resources when the mentoring project is finished.
+
+Create or set an administrator password and create the pipeline user. Keep both
+passwords out of source control:
+
+```bash
 # Set an admin password for the one-time import.
 gcloud sql users set-password postgres \
   --instance=adventureworks-db \
@@ -137,22 +161,30 @@ PGPASSWORD='POSTGRES_PASSWORD' psql \
   -h 127.0.0.1 -p 5432 -U postgres -d adventureworks <<'SQL'
 GRANT USAGE ON SCHEMA sales TO "pipeline-reader";
 GRANT SELECT ON ALL TABLES IN SCHEMA sales TO "pipeline-reader";
+GRANT USAGE ON SCHEMA production TO "pipeline-reader";
+GRANT SELECT ON ALL TABLES IN SCHEMA production TO "pipeline-reader";
 ALTER DEFAULT PRIVILEGES IN SCHEMA sales
+  GRANT SELECT ON TABLES TO "pipeline-reader";
+ALTER DEFAULT PRIVILEGES IN SCHEMA production
   GRANT SELECT ON TABLES TO "pipeline-reader";
 SQL
 ```
 
 ### Store the pipeline connection string
 
-The Terraform resource creates only the Secret Manager container. Add its first
-version after the database is loaded. In PowerShell, use a temporary file:
+Terraform creates the Secret Manager container but not its value. Add a version
+after loading the database. In PowerShell, use the Cloud SQL public IP as the
+connection host; the NAT IP is the client egress address, not the database host.
+Use a temporary file:
 
 ```powershell
-'host=HOST_IP;user=pipeline-reader;password=PIPELINE_PASSWORD;dbname=adventureworks' |
+$PROJECT_ID = (gcloud config get-value project).Trim()
+$sqlHost = gcloud sql instances describe adventureworks-db --project=$PROJECT_ID --format='value(ipAddresses[0].ipAddress)'
+"host=$sqlHost;user=pipeline-reader;password=PIPELINE_PASSWORD;dbname=adventureworks" |
   Set-Content -NoNewline connection.txt
 
 gcloud secrets versions add cloud-sql-connection-string `
-  --project=$env:PROJECT_ID `
+  --project=$PROJECT_ID `
   --data-file=connection.txt
 
 Remove-Item connection.txt
@@ -161,58 +193,82 @@ Remove-Item connection.txt
 Do not commit `connection.txt` or replace the placeholders in this README with
 real credentials.
 
-> **Security note:** The Cloud SQL Auth Proxy is used for the local import, but the Dataproc extractor connects directly to the host in Secret Manager. If using a public IP, configure a restricted authorized network path for Dataproc; never use `0.0.0.0/0` outside a disposable sandbox. For production, prefer private IP and VPC connectivity.
+> **Network note:** Cloud NAT gives Dataproc a static public egress IP, which Terraform adds to Cloud SQL as a `/32` authorized network. The AdventureWorks extract batch must use `--subnet=default` to use this NAT path. No VPN or broad `0.0.0.0/0` rule is required.
 
 > **Schema note:** The extractor expects `sales.salesorderheader`,
-> `sales.salesorderdetail`, `sales.product`, and `sales.customer`. Verify those
-> tables exist after `install.sql` completes. The `pipeline-reader` account must
-> have `SELECT` privileges on them.
+> `sales.salesorderdetail`, `sales.customer`, `production.product`, and
+> `production.productsubcategory`. Verify those tables exist after `install.sql`
+> completes. The `pipeline-reader` account needs `SELECT` privileges in both
+> `sales` and `production` schemas.
 
-> **Teardown note:** `terraform destroy` does NOT delete the Cloud SQL instance. Run `gcloud sql instances delete adventureworks-db` separately.
+> **Teardown note:** Terraform manages the Cloud SQL instance/database and
+> protects them from deletion. To tear down the sandbox, deliberately remove
+> `prevent_destroy` in `terraform/cloud_sql.tf` and disable Cloud SQL deletion
+> protection before running `terraform destroy`.
 
 ---
 
 ## Part D — Lane A: Airbnb flat files
 
 ```bash
-# Upload source files
+# Upload the source CSVs and stage the two PySpark jobs
 gcloud storage cp listings.csv calendar.csv reviews.csv \
   gs://${PROJECT_ID}-landing/raw/airbnb/
+gcloud storage cp pyspark-jobs/airbnb/csv_to_parquet.py \
+  pyspark-jobs/airbnb/transform_to_bq.py \
+  gs://${PROJECT_ID}-deploy/jobs/airbnb/
 
-# Run Lane A (or let Cloud Workflows do it)
-gcloud dataproc batches submit pyspark gs://${PROJECT_ID}-deploy/jobs/csv_to_parquet.py \
+# Extract all three CSVs to Parquet. Wait for this batch to succeed before
+# submitting the transform batch.
+gcloud dataproc batches submit pyspark gs://${PROJECT_ID}-deploy/jobs/airbnb/csv_to_parquet.py \
   --region=us-central1 \
   --service-account=sa-dataproc-jobs@${PROJECT_ID}.iam.gserviceaccount.com \
   --deps-bucket=gs://${PROJECT_ID}-deploy \
   -- --project=${PROJECT_ID}
 
-gcloud dataproc batches submit pyspark gs://${PROJECT_ID}-deploy/jobs/transform_to_bq.py \
+gcloud dataproc batches submit pyspark gs://${PROJECT_ID}-deploy/jobs/airbnb/transform_to_bq.py \
   --region=us-central1 \
   --service-account=sa-dataproc-jobs@${PROJECT_ID}.iam.gserviceaccount.com \
   --deps-bucket=gs://${PROJECT_ID}-deploy \
-  --properties spark.jars.packages=com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.36.1 \
   -- --project=${PROJECT_ID}
 ```
+
+> **Dataproc note:** Dataproc Serverless includes a BigQuery connector. Do not
+> add another connector with `spark.jars.packages`; loading a second copy can
+> cause Spark class-loading errors. The transform writes `listings.csv` data to
+> `${PROJECT_ID}.warehouse.airbnb_fact_listings`.
 
 ---
 
 ## Part E — Lane B: AdventureWorks (relational)
 
 ```bash
-gcloud dataproc batches submit pyspark gs://${PROJECT_ID}-deploy/jobs/extract_adventureworks.py \
+# Stage the Lane B jobs. The JDBC jar was uploaded in Part B.
+gcloud storage cp pyspark-jobs/adventureworks/extract_adventureworks.py \
+  pyspark-jobs/adventureworks/transform_adventureworks.py \
+  gs://${PROJECT_ID}-deploy/jobs/adventureworks/
+
+# Use the NAT-enabled subnet so this batch reaches Cloud SQL from its
+# Terraform-allowlisted static egress IP. Wait for extraction to succeed.
+gcloud dataproc batches submit pyspark gs://${PROJECT_ID}-deploy/jobs/adventureworks/extract_adventureworks.py \
   --region=us-central1 \
   --service-account=sa-dataproc-jobs@${PROJECT_ID}.iam.gserviceaccount.com \
   --deps-bucket=gs://${PROJECT_ID}-deploy \
   --jars=gs://${PROJECT_ID}-deploy/jars/postgresql-42.7.3.jar \
+  --subnet=default \
   -- --project=${PROJECT_ID}
 
-gcloud dataproc batches submit pyspark gs://${PROJECT_ID}-deploy/jobs/transform_adventureworks.py \
+gcloud dataproc batches submit pyspark gs://${PROJECT_ID}-deploy/jobs/adventureworks/transform_adventureworks.py \
   --region=us-central1 \
   --service-account=sa-dataproc-jobs@${PROJECT_ID}.iam.gserviceaccount.com \
   --deps-bucket=gs://${PROJECT_ID}-deploy \
-  --properties spark.jars.packages=com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.36.1 \
   -- --project=${PROJECT_ID}
 ```
+
+> **Dataproc note:** Dataproc Serverless includes a BigQuery connector. Do not
+> add another connector with `spark.jars.packages`; a duplicate can cause Spark
+> class-loading errors. The extractor reads products from `production`, while
+> orders and customers come from `sales`.
 
 ---
 

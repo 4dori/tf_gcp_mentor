@@ -3,11 +3,10 @@ Lane B — Job 2
 Read curated AdventureWorks Parquet and write sales_fact + sales_dim to BigQuery.
 
 Submit example:
-  gcloud dataproc batches submit pyspark gs://$PROJECT-deploy/jobs/transform_adventureworks.py \
+    gcloud dataproc batches submit pyspark gs://$PROJECT-deploy/jobs/adventureworks/transform_adventureworks.py \
     --region=us-central1 \
     --service-account=sa-dataproc-jobs@$PROJECT.iam.gserviceaccount.com \
     --deps-bucket=gs://$PROJECT-deploy \
-    --properties spark.jars.packages=com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.36.1 \
     -- --project=$PROJECT
 """
 
@@ -64,7 +63,10 @@ def main():
 
     orders = spark.read.parquet(f"{curated}/sales_salesorderheader")
     details = spark.read.parquet(f"{curated}/sales_salesorderdetail")
-    products = spark.read.parquet(f"{curated}/sales_product")
+    products = spark.read.parquet(f"{curated}/production_product")
+    product_subcategories = spark.read.parquet(
+        f"{curated}/production_productsubcategory"
+    )
     customers = spark.read.parquet(f"{curated}/sales_customer")
 
     # ── Detailed sales fact ───────────────────────────────────────────────────
@@ -72,6 +74,11 @@ def main():
         details.alias("d")
         .join(orders.alias("o"), F.col("d.salesorderid") == F.col("o.salesorderid"))
         .join(products.alias("p"), F.col("d.productid") == F.col("p.productid"))
+        .join(
+            product_subcategories.alias("ps"),
+            F.col("p.productsubcategoryid") == F.col("ps.productsubcategoryid"),
+            "left",
+        )
         .join(customers.alias("c"), F.col("o.customerid") == F.col("c.customerid"))
         .select(
             F.col("d.salesorderid"),
@@ -81,10 +88,14 @@ def main():
             F.col("c.storeid"),
             F.col("d.productid"),
             F.col("p.name").alias("product_name"),
-            F.col("p.productcategoryid"),
+            F.col("ps.productcategoryid"),
             F.col("d.orderqty"),
             F.col("d.unitprice"),
-            F.col("d.linetotal"),
+            (
+                F.col("d.unitprice")
+                * (F.lit(1) - F.col("d.unitpricediscount"))
+                * F.col("d.orderqty")
+            ).alias("linetotal"),
         )
     )
 

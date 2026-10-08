@@ -7,11 +7,12 @@ Connection string format stored in the secret:
   host=HOST;user=pipeline-reader;password=PASS;dbname=adventureworks
 
 Submit example:
-  gcloud dataproc batches submit pyspark gs://$PROJECT-deploy/jobs/extract_adventureworks.py \
+    gcloud dataproc batches submit pyspark gs://$PROJECT-deploy/jobs/adventureworks/extract_adventureworks.py \
     --region=us-central1 \
     --service-account=sa-dataproc-jobs@$PROJECT.iam.gserviceaccount.com \
     --deps-bucket=gs://$PROJECT-deploy \
     --jars=gs://$PROJECT-deploy/jars/postgresql-42.7.3.jar \
+    --subnet=default \
     -- --project=$PROJECT
 """
 
@@ -28,7 +29,8 @@ SECRET_NAME_TEMPLATE = "projects/{project}/secrets/cloud-sql-connection-string/v
 TABLES = [
     "sales.salesorderheader",
     "sales.salesorderdetail",
-    "sales.product",
+    "production.product",
+    "production.productsubcategory",
     "sales.customer",
 ]
 

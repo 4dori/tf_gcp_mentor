@@ -3,11 +3,10 @@ Lane A — Job 2
 Read curated Airbnb Parquet from GCS and write fact table to BigQuery.
 
 Submit example:
-  gcloud dataproc batches submit pyspark gs://$PROJECT-deploy/jobs/transform_to_bq.py \
+    gcloud dataproc batches submit pyspark gs://$PROJECT-deploy/jobs/airbnb/transform_to_bq.py \
     --region=us-central1 \
     --service-account=sa-dataproc-jobs@$PROJECT.iam.gserviceaccount.com \
     --deps-bucket=gs://$PROJECT-deploy \
-    --properties spark.jars.packages=com.google.cloud.spark:spark-bigquery-with-dependencies_2.12:0.36.1 \
     -- --project=$PROJECT
 """
 

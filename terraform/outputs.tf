@@ -32,3 +32,13 @@ output "cloud_sql_secret_id" {
   description = "Resource ID of the Cloud SQL connection-string secret container."
   value       = google_secret_manager_secret.cloud_sql_conn.id
 }
+
+output "dataproc_nat_ip" {
+  description = "Static public egress IP to allowlist on external data sources."
+  value       = google_compute_address.dataproc_nat.address
+}
+
+output "dataproc_subnet" {
+  description = "Subnet to attach to Dataproc Serverless batches for NAT egress."
+  value       = data.google_compute_subnetwork.default.self_link
+}

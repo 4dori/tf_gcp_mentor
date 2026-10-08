@@ -2,6 +2,8 @@ locals {
   apis = [
     "cloudresourcemanager.googleapis.com",
     "iam.googleapis.com",
+    "compute.googleapis.com",
+    "sqladmin.googleapis.com",
     "storage.googleapis.com",
     "bigquery.googleapis.com",
     "dataproc.googleapis.com",

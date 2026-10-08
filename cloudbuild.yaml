@@ -31,11 +31,13 @@ steps:
   # ── Step 2: Copy PySpark jobs to deploy bucket ──────────────────────────────
   - id: copy-pyspark-jobs
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: sh
     args:
-      - storage
-      - cp
-      - pyspark-jobs/*.py
-      - gs://${PROJECT_ID}-deploy/jobs/
+      - -c
+      - |
+        set -e
+        gcloud storage cp pyspark-jobs/airbnb/*.py gs://${PROJECT_ID}-deploy/jobs/airbnb/
+        gcloud storage cp pyspark-jobs/adventureworks/*.py gs://${PROJECT_ID}-deploy/jobs/adventureworks/
 
   # ── Step 3: Copy Cloud Workflows YAML to deploy bucket ─────────────────────
   - id: copy-workflow-yaml

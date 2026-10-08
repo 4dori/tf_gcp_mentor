@@ -3,7 +3,7 @@ Lane A — Job 1
 Read Airbnb CSV files from GCS landing bucket and write as Parquet to curated layer.
 
 Submit example:
-  gcloud dataproc batches submit pyspark gs://$PROJECT-deploy/jobs/csv_to_parquet.py \
+    gcloud dataproc batches submit pyspark gs://$PROJECT-deploy/jobs/airbnb/csv_to_parquet.py \
     --region=us-central1 \
     --service-account=sa-dataproc-jobs@$PROJECT.iam.gserviceaccount.com \
     --deps-bucket=gs://$PROJECT-deploy \
