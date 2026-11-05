@@ -6,9 +6,13 @@ steps:
       - -c
       - |
         set -euo pipefail
+        echo "[publish] Cloning 4dori/gcp_de_programm branch main"
         git clone --depth 1 --branch main https://github.com/4dori/gcp_de_programm.git program
+        echo "[publish] Uploading PySpark jobs to gs://${PROJECT_ID}-deploy/jobs"
         gcloud storage rsync --recursive program/pyspark-jobs gs://${PROJECT_ID}-deploy/jobs
+        echo "[publish] Uploading SQL files to gs://${PROJECT_ID}-deploy/sql"
         gcloud storage rsync --recursive program/sql gs://${PROJECT_ID}-deploy/sql
+        echo "[publish] Script and SQL upload completed successfully"
 
 options:
   logging: CLOUD_LOGGING_ONLY
